@@ -19,4 +19,4 @@ RUN mkdir -p /usr/app/storage/logs /usr/app/storage/backups
 
 # Set up the script to run with a default command
 # This assumes the environment variables are passed at runtime
-CMD ["python", "daily_docker_backup.py"]
+CMD ["python", "backup.py"]

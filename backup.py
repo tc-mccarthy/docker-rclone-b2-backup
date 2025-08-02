@@ -51,7 +51,15 @@ logging.basicConfig(
 )
 
 def run_command(command):
-    """Run a shell command and raise an error if it fails."""
+    """
+    Run a shell command and raise an error if it fails.
+
+    Args:
+        command (str): The shell command to execute.
+
+    Returns:
+        subprocess.CompletedProcess: The completed process object.
+    """
     logging.info(f"Executing: {command}")
     result = subprocess.run(command, shell=True)
     if result.returncode != 0:
@@ -76,13 +84,17 @@ def create_backup(source_dir, backup_name):
     os.makedirs(BACKUP_DIR, exist_ok=True)
     backup_path = os.path.join(BACKUP_DIR, backup_name)
 
+    logging.info("Gathering files for backup...")
     # Gather all files to back up
     all_files = [f for f in pathlib.Path(source_dir).rglob("*") if f.is_file()]
 
     with tarfile.open(backup_path, "w:gz") as tar, tqdm(total=len(all_files), desc="Creating backup", unit="file") as pbar:
         for file in all_files:
             arcname = file.relative_to(source_dir)
-            tar.add(file, arcname=arcname)
+            try:
+                tar.add(file, arcname=arcname)
+            except Exception as e:
+                logging.warning(f"Skipping file {file} due to error: {e}")
             pbar.update(1)
 
     return backup_path
@@ -99,31 +111,31 @@ def upload_to_b2(local_path, remote_path):
 
 def prune_old_backups_local(retention_count):
     """
-    Prune local backups to retain only the specified number.
-    Prevents disk from filling up by deleting oldest backup files.
+    Delete older local backup files, keeping only the most recent N.
+
+    This function ensures the local disk doesn't fill up by limiting the
+    number of retained backup archives in BACKUP_DIR.
 
     Args:
-        retention_count (int): Number of local backups to retain.
+        retention_count (int): Number of recent backups to retain.
     """
-    # Find all backup files matching the naming pattern
     backups = sorted(glob.glob(os.path.join(BACKUP_DIR, f"{JOB_NAME}-backup-*.tar.gz")))
-    # Determine which backups are old (to delete)
     old_backups = backups[:-retention_count] if len(backups) > retention_count else []
-    # Remove each old backup file
     for file_path in old_backups:
         os.remove(file_path)
         logging.info(f"Deleted old local backup: {file_path}")
 
 def prune_old_backups_remote(remote_path, retention_count):
     """
-    Keep only the latest backups in the B2 bucket.
-    Ensures cloud storage doesn't grow unbounded by removing oldest files.
+    Prune older backups stored in the remote B2 bucket.
+
+    This uses `rclone lsf` to list files and `rclone delete` to remove
+    older ones beyond the retention limit.
 
     Args:
-        remote_path (str): Rclone B2 destination.
-        retention_count (int): Number of remote backups to retain.
+        remote_path (str): Remote path (e.g., B2:bucket/path).
+        retention_count (int): Number of recent backups to retain.
     """
-    # List files in remote backup directory, sorted by time
     list_command = f"rclone lsf --files-only --sort -time '{remote_path}'"
     logging.info(f"Pruning remote backups in {remote_path}, keeping last {retention_count}.")
     result = subprocess.run(list_command, shell=True, capture_output=True, text=True)
@@ -132,11 +144,9 @@ def prune_old_backups_remote(remote_path, retention_count):
         logging.error(f"Failed to list remote backups: {result.stderr}")
         raise RuntimeError("Failed to list remote backups")
 
-    # Split output into file list and determine which files to delete
     files = result.stdout.strip().split('\n')
     old_files = files[:-retention_count] if len(files) > retention_count else []
 
-    # Delete each old file from remote
     for file in old_files:
         delete_command = f"rclone delete '{remote_path}/{file}'"
         run_command(delete_command)
@@ -145,7 +155,9 @@ def prune_old_backups_remote(remote_path, retention_count):
 def validate_b2_credentials(remote_path):
     """
     Validate B2 credentials using rclone by testing access to the remote path.
-    Ensures rclone can access the B2 bucket before proceeding with backup.
+
+    Args:
+        remote_path (str): Remote path to test (e.g., B2:bucket/path)
     """
     logging.info("Validating Backblaze B2 credentials...")
     test_command = f"rclone lsf '{remote_path}'"
@@ -156,7 +168,7 @@ def validate_b2_credentials(remote_path):
 
 def main():
     """Main backup routine."""
-    source_dir = "/backup_source"
+    source_dir = "/backup_source"  # Fixed value for containerized execution
     b2_bucket = os.environ.get("B2_BUCKET")
     remote_path = os.environ.get("REMOTE_PATH")
     b2_account = os.environ.get("B2_ACCOUNT_ID")
@@ -164,8 +176,8 @@ def main():
     local_retention = int(os.environ.get("LOCAL_RETENTION", 30))
     remote_retention = int(os.environ.get("REMOTE_RETENTION", 30))
 
-    if not b2_bucket or not remote_path or not b2_account or not b2_key or not source_dir:
-        logging.error("Missing required environment variables. Required: B2_BUCKET, REMOTE_PATH, B2_ACCOUNT_ID, B2_ACCOUNT_KEY, BACKUP_SOURCE")
+    if not b2_bucket or not remote_path or not b2_account or not b2_key:
+        logging.error("Missing required environment variables. Required: B2_BUCKET, REMOTE_PATH, B2_ACCOUNT_ID, B2_ACCOUNT_KEY")
         sys.exit(1)
 
     b2_remote = f"B2:{b2_bucket}/{remote_path}".rstrip('/')

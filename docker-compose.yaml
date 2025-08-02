@@ -1,0 +1,30 @@
+version: "3"
+
+services:
+  docker-rclone-b2-backup:
+    container_name: docker-rclone-b2-backup
+    hostname: docker-rclone-b2-backup
+    build:
+      context: .
+    env_file:
+      - .env
+    volumes:
+      - ${BACKUP_SOURCE}:/backup_source:ro
+      - ./storage/logs:/usr/app/storage/logs
+      - ./storage/backups:/usr/app/storage/backups
+    environment:
+      - BUILD_VERSION=local-build
+      - NODE_ENV=${ENV:-local}
+      - NODE_OPTIONS=--enable-source-maps
+      - LOG_LEVEL=info
+      - LOG_PRETTY=on
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  default:
+    name: special-projects
+    external: true

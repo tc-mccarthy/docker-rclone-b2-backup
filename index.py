@@ -30,16 +30,19 @@ import logging
 import sys
 import glob
 
-# Configure logging directory and file
+# --- Environment and Logging Setup ---
+# Get the job name from environment (used for naming backups and logs)
 JOB_NAME = os.environ.get("JOB_NAME")
 if not JOB_NAME:
     print("Error: Missing required environment variable JOB_NAME.")
     sys.exit(1)
 
+# Define directories for logs and backups
 LOG_DIR = "/usr/app/storage/logs"
 BACKUP_DIR = "/usr/app/storage/backups"
 LOGFILE = os.path.join(LOG_DIR, f"{JOB_NAME}.log")
 
+# Ensure log directory exists and configure logging to both file and stdout
 os.makedirs(LOG_DIR, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -51,7 +54,10 @@ logging.basicConfig(
 )
 
 def run_command(command):
-    """Run a shell command and raise an error if it fails."""
+    """
+    Run a shell command and raise an error if it fails.
+    Used for all system-level operations (tar, rclone, etc).
+    """
     logging.info(f"Executing: {command}")
     result = subprocess.run(command, shell=True)
     if result.returncode != 0:
@@ -60,7 +66,9 @@ def run_command(command):
     return result
 
 def create_backup(source_dir, backup_name):
-    """Create a gzipped tarball of the source directory.
+    """
+    Create a gzipped tarball of the source directory.
+    This is the main local backup step before uploading to cloud.
 
     Args:
         source_dir (str): Directory to back up.
@@ -76,7 +84,9 @@ def create_backup(source_dir, backup_name):
     return backup_path
 
 def upload_to_b2(local_path, remote_path):
-    """Upload the tarball to Backblaze B2 using rclone.
+    """
+    Upload the tarball to Backblaze B2 using rclone.
+    Handles cloud transfer after local backup is created.
 
     Args:
         local_path (str): Path to the local tar.gz file.
@@ -86,7 +96,9 @@ def upload_to_b2(local_path, remote_path):
     run_command(command)
 
 def prune_old_backups_local(retention_count):
-    """Prune local backups to retain only the specified number.
+    """
+    Prune local backups to retain only the specified number.
+    Prevents disk from filling up by deleting oldest backups.
 
     Args:
         retention_count (int): Number of local backups to retain.
@@ -98,12 +110,15 @@ def prune_old_backups_local(retention_count):
         logging.info(f"Deleted old local backup: {file_path}")
 
 def prune_old_backups_remote(remote_path, retention_count):
-    """Keep only the latest backups in the B2 bucket.
+    """
+    Keep only the latest backups in the B2 bucket.
+    Ensures cloud storage doesn't grow unbounded by removing oldest files.
 
     Args:
         remote_path (str): Rclone B2 destination.
         retention_count (int): Number of remote backups to retain.
     """
+    # List files in remote backup directory, sorted by time
     list_command = f"rclone lsf --files-only --sort -time '{remote_path}'"
     logging.info(f"Pruning remote backups in {remote_path}, keeping last {retention_count}.")
     result = subprocess.run(list_command, shell=True, capture_output=True, text=True)
@@ -115,13 +130,30 @@ def prune_old_backups_remote(remote_path, retention_count):
     files = result.stdout.strip().split('\n')
     old_files = files[:-retention_count] if len(files) > retention_count else []
 
+    # Delete each old file from remote
     for file in old_files:
         delete_command = f"rclone delete '{remote_path}/{file}'"
         run_command(delete_command)
         logging.info(f"Deleted old remote backup: {file}")
 
+def validate_b2_credentials():
+    """
+    Validate B2 credentials using rclone.
+    Checks that rclone can access the B2 bucket before proceeding.
+    """
+    logging.info("Validating Backblaze B2 credentials...")
+    test_command = "rclone about b2:"
+    result = subprocess.run(test_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        logging.error(f"B2 credential validation failed: {result.stderr.decode().strip()}")
+        raise RuntimeError("Invalid B2 credentials or configuration.")
+
 def main():
-    """Main backup routine."""
+    """
+    Main backup routine.
+    Orchestrates the full backup workflow: validate, backup, upload, prune.
+    """
+    # --- Gather configuration from environment variables ---
     source_dir = os.environ.get("BACKUP_SOURCE", "/backup_source")
     b2_bucket = os.environ.get("B2_BUCKET")
     remote_path = os.environ.get("REMOTE_PATH")
@@ -130,23 +162,32 @@ def main():
     local_retention = int(os.environ.get("LOCAL_RETENTION", 30))
     remote_retention = int(os.environ.get("REMOTE_RETENTION", 30))
 
+    # --- Validate required configuration ---
     if not b2_bucket or not remote_path or not b2_account or not b2_key or not source_dir:
         logging.error("Missing required environment variables. Required: B2_BUCKET, REMOTE_PATH, B2_ACCOUNT_ID, B2_ACCOUNT_KEY, BACKUP_SOURCE")
         sys.exit(1)
 
+    # --- Compose remote path and backup filename ---
     b2_remote = f"b2:{b2_bucket}/{remote_path}".rstrip('/')
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_name = f"{JOB_NAME}-backup-{timestamp}.tar.gz"
 
     try:
+        # Step 1: Validate credentials before doing anything destructive
+        validate_b2_credentials()
+        # Step 2: Create local backup tarball
         backup_path = create_backup(source_dir, backup_name)
+        # Step 3: Upload backup to B2 cloud
         upload_to_b2(backup_path, b2_remote)
+        # Step 4: Prune old backups in remote cloud
         prune_old_backups_remote(b2_remote, remote_retention)
+        # Step 5: Prune old backups locally
         prune_old_backups_local(local_retention)
         logging.info(f"Backup {backup_name} complete and cleaned up.")
     except Exception as e:
         logging.error(f"Backup process failed: {e}")
         sys.exit(1)
 
+# --- Entry point ---
 if __name__ == "__main__":
     main()

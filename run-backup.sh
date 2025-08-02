@@ -29,6 +29,7 @@ done
 
 # Run the backup job using docker compose
 echo "🚀 Running backup job for '$JOB_NAME'..."
+docker compose build
 docker compose run --rm docker-rclone-b2-backup
 
 echo "✅ Backup complete."

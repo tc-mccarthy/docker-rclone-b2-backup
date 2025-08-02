@@ -12,7 +12,7 @@ RUN apt-get update && \
 WORKDIR /usr/app
 
 # Copy your Python script into the container
-COPY daily_docker_backup.py .
+COPY backup.py .
 
 # Create mountable directories for logs and backups
 RUN mkdir -p /usr/app/storage/logs /usr/app/storage/backups

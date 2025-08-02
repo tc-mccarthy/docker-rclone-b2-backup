@@ -18,6 +18,10 @@ services:
       - NODE_OPTIONS=--enable-source-maps
       - LOG_LEVEL=info
       - LOG_PRETTY=on
+      - RCLONE_CONFIG_B2_TYPE=b2
+      - RCLONE_CONFIG_B2_ACCOUNT=${B2_ACCOUNT_ID}
+      - RCLONE_CONFIG_B2_KEY=${B2_ACCOUNT_KEY}
+
     logging:
       driver: "json-file"
       options:

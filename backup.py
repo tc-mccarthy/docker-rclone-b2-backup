@@ -156,7 +156,7 @@ def main():
         logging.error("Missing required environment variables. Required: B2_BUCKET, REMOTE_PATH, B2_ACCOUNT_ID, B2_ACCOUNT_KEY, BACKUP_SOURCE")
         sys.exit(1)
 
-    b2_remote = f"b2:{b2_bucket}/{remote_path}".rstrip('/')
+    b2_remote = f"B2:{b2_bucket}/{remote_path}".rstrip('/')
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_name = f"{JOB_NAME}-backup-{timestamp}.tar.gz"
 

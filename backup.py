@@ -144,7 +144,7 @@ def validate_b2_credentials(remote_path):
 
 def main():
     """Main backup routine."""
-    source_dir = os.environ.get("BACKUP_SOURCE", "/backup_source")
+    source_dir = "/backup_source"
     b2_bucket = os.environ.get("B2_BUCKET")
     remote_path = os.environ.get("REMOTE_PATH")
     b2_account = os.environ.get("B2_ACCOUNT_ID")

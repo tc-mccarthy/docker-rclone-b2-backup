@@ -23,8 +23,3 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
-
-networks:
-  default:
-    name: special-projects
-    external: true

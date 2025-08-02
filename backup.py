@@ -60,7 +60,7 @@ def run_command(command):
     return result
 
 def create_backup(source_dir, backup_name):
-    """Create a gzipped tarball of the source directory.
+    """Create a gzipped tarball of the source directory with progress.
 
     Args:
         source_dir (str): Directory to back up.
@@ -69,10 +69,22 @@ def create_backup(source_dir, backup_name):
     Returns:
         str: Full path to the created tar.gz file.
     """
+    import tarfile
+    import pathlib
+    from tqdm import tqdm
+
     os.makedirs(BACKUP_DIR, exist_ok=True)
     backup_path = os.path.join(BACKUP_DIR, backup_name)
-    command = f"tar -czf {backup_path} -C {source_dir} ."
-    run_command(command)
+
+    # Gather all files to back up
+    all_files = [f for f in pathlib.Path(source_dir).rglob("*") if f.is_file()]
+
+    with tarfile.open(backup_path, "w:gz") as tar, tqdm(total=len(all_files), desc="Creating backup", unit="file") as pbar:
+        for file in all_files:
+            arcname = file.relative_to(source_dir)
+            tar.add(file, arcname=arcname)
+            pbar.update(1)
+
     return backup_path
 
 def upload_to_b2(local_path, remote_path):

@@ -8,6 +8,9 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Python dependencies
+RUN pip install --no-cache-dir tqdm
+
 # Set working directory inside the container
 WORKDIR /usr/app
 

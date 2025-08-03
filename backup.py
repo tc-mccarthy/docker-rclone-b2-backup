@@ -29,6 +29,7 @@ import datetime
 import logging
 import sys
 import glob
+import json
 
 # Configure logging directory and file
 JOB_NAME = os.environ.get("JOB_NAME")
@@ -129,14 +130,14 @@ def prune_old_backups_remote(remote_path, retention_count):
     """
     Prune older backups stored in the remote B2 bucket.
 
-    This uses `rclone lsf` to list files and `rclone delete` to remove
+    This uses `rclone lsjson` to list files and `rclone delete` to remove
     older ones beyond the retention limit.
 
     Args:
         remote_path (str): Remote path (e.g., B2:bucket/path).
         retention_count (int): Number of recent backups to retain.
     """
-    list_command = f"rclone lsf --files-only --sort -time '{remote_path}'"
+    list_command = f"rclone lsjson --files-only --recursive --modtime '{remote_path}'"
     logging.info(f"Pruning remote backups in {remote_path}, keeping last {retention_count}.")
     result = subprocess.run(list_command, shell=True, capture_output=True, text=True)
 
@@ -144,13 +145,18 @@ def prune_old_backups_remote(remote_path, retention_count):
         logging.error(f"Failed to list remote backups: {result.stderr}")
         raise RuntimeError("Failed to list remote backups")
 
-    files = result.stdout.strip().split('\n')
-    old_files = files[:-retention_count] if len(files) > retention_count else []
+    try:
+        files = json.loads(result.stdout)
+        files.sort(key=lambda f: f['ModTime'])
+        old_files = files[:-retention_count] if len(files) > retention_count else []
 
-    for file in old_files:
-        delete_command = f"rclone delete '{remote_path}/{file}'"
-        run_command(delete_command)
-        logging.info(f"Deleted old remote backup: {file}")
+        for file in old_files:
+            delete_command = f"rclone delete '{remote_path}/{file['Path']}'"
+            run_command(delete_command)
+            logging.info(f"Deleted old remote backup: {file['Path']}")
+    except Exception as e:
+        logging.error(f"Error parsing backup list: {e}")
+        raise RuntimeError("Could not process remote backup list")
 
 def validate_b2_credentials(remote_path):
     """

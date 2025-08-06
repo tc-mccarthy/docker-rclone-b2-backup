@@ -9,7 +9,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip install --no-cache-dir tqdm
+RUN pip install --no-cache-dir tqdm b2sdk
 
 # Set working directory inside the container
 WORKDIR /usr/app

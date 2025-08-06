@@ -23,13 +23,19 @@ Author: TC McCarthy (with assistance from ChatGPT)
 License: MIT or similar permissive license
 """
 
+# updated implementation inserted below
+
 import os
 import subprocess
 import datetime
 import logging
 import sys
 import glob
-import json
+import tarfile
+import pathlib
+from tqdm import tqdm
+import requests
+import base64
 
 # Configure logging directory and file
 JOB_NAME = os.environ.get("JOB_NAME")
@@ -52,14 +58,16 @@ logging.basicConfig(
 )
 
 def run_command(command):
-    """
-    Run a shell command and raise an error if it fails.
+    """Run a shell command and raise an error if it fails.
 
     Args:
         command (str): The shell command to execute.
 
     Returns:
-        subprocess.CompletedProcess: The completed process object.
+        subprocess.CompletedProcess: The result of the executed command.
+
+    Raises:
+        RuntimeError: If the command returns a non-zero exit code.
     """
     logging.info(f"Executing: {command}")
     result = subprocess.run(command, shell=True)
@@ -69,7 +77,7 @@ def run_command(command):
     return result
 
 def create_backup(source_dir, backup_name):
-    """Create a gzipped tarball of the source directory with progress.
+    """Create a gzipped tarball of the source directory with progress bar.
 
     Args:
         source_dir (str): Directory to back up.
@@ -78,17 +86,15 @@ def create_backup(source_dir, backup_name):
     Returns:
         str: Full path to the created tar.gz file.
     """
-    import tarfile
-    import pathlib
-    from tqdm import tqdm
-
+    # Ensure backup directory exists
     os.makedirs(BACKUP_DIR, exist_ok=True)
     backup_path = os.path.join(BACKUP_DIR, backup_name)
 
     logging.info("Gathering files for backup...")
-    # Gather all files to back up
+    # Recursively collect all files to be archived
     all_files = [f for f in pathlib.Path(source_dir).rglob("*") if f.is_file()]
 
+    # Create tar.gz archive with progress bar
     with tarfile.open(backup_path, "w:gz") as tar, tqdm(total=len(all_files), desc="Creating backup", unit="file") as pbar:
         for file in all_files:
             arcname = file.relative_to(source_dir)
@@ -111,59 +117,111 @@ def upload_to_b2(local_path, remote_path):
     run_command(command)
 
 def prune_old_backups_local(retention_count):
-    """
-    Delete older local backup files, keeping only the most recent N.
-
-    This function ensures the local disk doesn't fill up by limiting the
-    number of retained backup archives in BACKUP_DIR.
+    """Prune local backups to retain only the specified number.
 
     Args:
-        retention_count (int): Number of recent backups to retain.
+        retention_count (int): Number of local backups to retain.
     """
+    # Find all backup files matching the naming pattern
     backups = sorted(glob.glob(os.path.join(BACKUP_DIR, f"{JOB_NAME}-backup-*.tar.gz")))
+    # Determine which backups are old (to delete)
     old_backups = backups[:-retention_count] if len(backups) > retention_count else []
+    # Remove each old backup file
     for file_path in old_backups:
         os.remove(file_path)
         logging.info(f"Deleted old local backup: {file_path}")
 
-def prune_old_backups_remote(remote_path, retention_count):
-    """
-    Prune older backups stored in the remote B2 bucket.
-
-    This uses `rclone lsjson` to list files and `rclone delete` to remove
-    older ones beyond the retention limit.
+def get_b2_auth_token(account_id, account_key):
+    """Obtain a Backblaze B2 API authorization token.
 
     Args:
-        remote_path (str): Remote path (e.g., B2:bucket/path).
-        retention_count (int): Number of recent backups to retain.
+        account_id (str): B2 account ID.
+        account_key (str): B2 application key.
+
+    Returns:
+        dict: JSON response containing API URL and authorization token.
     """
-    list_command = f"rclone lsjson --files-only --recursive --modtime '{remote_path}'"
-    logging.info(f"Pruning remote backups in {remote_path}, keeping last {retention_count}.")
-    result = subprocess.run(list_command, shell=True, capture_output=True, text=True)
+    auth_str = f"{account_id}:{account_key}"
+    encoded_auth = base64.b64encode(auth_str.encode()).decode()
+    headers = {"Authorization": f"Basic {encoded_auth}"}
+    resp = requests.get("https://api.backblazeb2.com/b2api/v2/b2_authorize_account", headers=headers)
+    resp.raise_for_status()
+    return resp.json()
 
-    if result.returncode != 0:
-        logging.error(f"Failed to list remote backups: {result.stderr}")
-        raise RuntimeError("Failed to list remote backups")
+def list_b2_files(api_url, auth_token, bucket_id, prefix):
+    """List files in a B2 bucket with a given prefix.
 
-    try:
-        files = json.loads(result.stdout)
-        files.sort(key=lambda f: f['ModTime'])
-        old_files = files[:-retention_count] if len(files) > retention_count else []
+    Args:
+        api_url (str): B2 API URL.
+        auth_token (str): B2 authorization token.
+        bucket_id (str): B2 bucket ID.
+        prefix (str): File prefix to filter.
 
-        for file in old_files:
-            delete_command = f"rclone delete '{remote_path}/{file['Path']}'"
-            run_command(delete_command)
-            logging.info(f"Deleted old remote backup: {file['Path']}")
-    except Exception as e:
-        logging.error(f"Error parsing backup list: {e}")
-        raise RuntimeError("Could not process remote backup list")
+    Returns:
+        list: List of file metadata dicts.
+    """
+    url = f"{api_url}/b2api/v2/b2_list_file_names"
+    headers = {"Authorization": auth_token}
+    data = {
+        "bucketId": bucket_id,
+        "prefix": prefix,
+        "maxFileCount": 1000
+    }
+    resp = requests.post(url, headers=headers, json=data)
+    resp.raise_for_status()
+    return resp.json().get("files", [])
+
+def delete_b2_file(api_url, auth_token, file_name, file_id):
+    """Delete a file version from B2 bucket.
+
+    Args:
+        api_url (str): B2 API URL.
+        auth_token (str): B2 authorization token.
+        file_name (str): Name of the file to delete.
+        file_id (str): File ID to delete.
+    """
+    url = f"{api_url}/b2api/v2/b2_delete_file_version"
+    headers = {"Authorization": auth_token}
+    data = {"fileName": file_name, "fileId": file_id}
+    resp = requests.post(url, headers=headers, json=data)
+    resp.raise_for_status()
+
+def prune_old_backups_remote_b2(bucket_id, prefix, retention_count, account_id, account_key):
+    """Prune old backups from B2 bucket using B2 API directly.
+
+    Args:
+        bucket_id (str): B2 bucket ID.
+        prefix (str): File prefix to filter.
+        retention_count (int): Number of remote backups to retain.
+        account_id (str): B2 account ID.
+        account_key (str): B2 application key.
+    """
+    # Authenticate and get API endpoint/token
+    auth_data = get_b2_auth_token(account_id, account_key)
+    api_url = auth_data["apiUrl"]
+    auth_token = auth_data["authorizationToken"]
+
+    logging.info(f"Pruning remote B2 backups in {prefix}, keeping last {retention_count}.")
+    # List all files with the given prefix
+    files = list_b2_files(api_url, auth_token, bucket_id, prefix)
+    # Sort files by upload timestamp (oldest first)
+    sorted_files = sorted(files, key=lambda f: f["uploadTimestamp"])
+    # Determine which files to delete
+    old_files = sorted_files[:-retention_count] if len(sorted_files) > retention_count else []
+
+    # Delete each old file
+    for f in old_files:
+        delete_b2_file(api_url, auth_token, f["fileName"], f["fileId"])
+        logging.info(f"Deleted remote B2 backup: {f['fileName']}")
 
 def validate_b2_credentials(remote_path):
-    """
-    Validate B2 credentials using rclone by testing access to the remote path.
+    """Validate B2 credentials using rclone by testing access to the remote path.
 
     Args:
-        remote_path (str): Remote path to test (e.g., B2:bucket/path)
+        remote_path (str): Rclone B2 destination path.
+
+    Raises:
+        RuntimeError: If credentials are invalid or access fails.
     """
     logging.info("Validating Backblaze B2 credentials...")
     test_command = f"rclone lsf '{remote_path}'"
@@ -172,9 +230,15 @@ def validate_b2_credentials(remote_path):
         logging.error(f"B2 credential validation failed: {result.stderr.decode().strip()}")
         raise RuntimeError("Invalid B2 credentials or configuration.")
 
+
 def main():
-    """Main backup routine."""
-    source_dir = "/backup_source"  # Fixed value for containerized execution
+    """Main backup routine orchestrating the full backup workflow.
+
+    Gathers configuration, validates credentials, creates backup, uploads to B2,
+    prunes old backups both remotely and locally, and logs the process.
+    """
+    # --- Gather configuration from environment variables ---
+    source_dir = "/backup_source"
     b2_bucket = os.environ.get("B2_BUCKET")
     remote_path = os.environ.get("REMOTE_PATH")
     b2_account = os.environ.get("B2_ACCOUNT_ID")
@@ -182,19 +246,26 @@ def main():
     local_retention = int(os.environ.get("LOCAL_RETENTION", 30))
     remote_retention = int(os.environ.get("REMOTE_RETENTION", 30))
 
+    # --- Validate required configuration ---
     if not b2_bucket or not remote_path or not b2_account or not b2_key:
         logging.error("Missing required environment variables. Required: B2_BUCKET, REMOTE_PATH, B2_ACCOUNT_ID, B2_ACCOUNT_KEY")
         sys.exit(1)
 
+    # --- Compose remote path and backup filename ---
     b2_remote = f"B2:{b2_bucket}/{remote_path}".rstrip('/')
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_name = f"{JOB_NAME}-backup-{timestamp}.tar.gz"
 
     try:
+        # Step 1: Validate credentials before doing anything destructive
         validate_b2_credentials(b2_remote)
+        # Step 2: Create local backup tarball
         backup_path = create_backup(source_dir, backup_name)
+        # Step 3: Upload backup to B2 cloud
         upload_to_b2(backup_path, b2_remote)
-        prune_old_backups_remote(b2_remote, remote_retention)
+        # Step 4: Prune old backups in remote cloud using B2 API
+        prune_old_backups_remote_b2(b2_bucket, remote_path, remote_retention, b2_account, b2_key)
+        # Step 5: Prune old backups locally
         prune_old_backups_local(local_retention)
         logging.info(f"Backup {backup_name} complete and cleaned up.")
     except Exception as e:

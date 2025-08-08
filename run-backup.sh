@@ -19,7 +19,7 @@ echo "📦 Loading environment variables from .env"
 source .env
 
 # Confirm key variables
-REQUIRED_VARS=(JOB_NAME B2_BUCKET REMOTE_PATH B2_ACCOUNT_ID B2_ACCOUNT_KEY)
+REQUIRED_VARS=(JOB_NAME B2_BUCKET BACKUP_DESTINATION_LOCAL BACKUP_DESTINATION_REMOTE B2_ACCOUNT_ID B2_ACCOUNT_KEY)
 for VAR in "${REQUIRED_VARS[@]}"; do
   if [ -z "${!VAR}" ]; then
     echo "❌ Error: Required variable $VAR is not set in .env"

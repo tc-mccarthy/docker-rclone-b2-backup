@@ -308,19 +308,19 @@ def main() -> None:
 
     try:
         # 1) Validate B2 creds & bucket before doing heavy work
-        validate_b2_or_fail(b2_bucket, b2_account, b2_key)
+        # validate_b2_or_fail(b2_bucket, b2_account, b2_key)
 
-        # 2) Create local backup
-        archive_path = create_backup(SOURCE_DIR, backup_name)
+        # # 2) Create local backup
+        # archive_path = create_backup(SOURCE_DIR, backup_name)
 
-        # 3) Upload to B2 (rclone shows progress)
-        upload_to_b2(archive_path, b2_remote)
+        # # 3) Upload to B2 (rclone shows progress)
+        # upload_to_b2(archive_path, b2_remote)
 
         # 4) Remote prune (API)
         prune_old_backups_remote_b2(b2_bucket, remote_path, remote_retention, b2_account, b2_key)
 
-        # 5) Local prune
-        prune_old_backups_local(local_retention)
+        # # 5) Local prune
+        # prune_old_backups_local(local_retention)
 
         logging.info(f"Backup {backup_name} completed successfully.")
     except Exception as e:

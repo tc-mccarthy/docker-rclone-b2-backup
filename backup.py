@@ -165,26 +165,30 @@ def b2_authorize(account_id: str, account_key: str) -> Dict:
     resp.raise_for_status()
     return resp.json()
 
-def b2_resolve_bucket_id(api_url: str, auth_token: str, bucket_name: str, allowed: Dict) -> str:
-    """Resolve bucket ID for bucket_name. Use allowed scope if present, else list buckets."""
-    if allowed:
-        # If key is restricted to a bucket, it may already be provided
-        if allowed.get("bucketName") == bucket_name and allowed.get("bucketId"):
-            return allowed["bucketId"]
+def b2_resolve_bucket_id(api_url: str, auth_token: str, bucket_name: str, allowed: dict, account_id: str) -> str:
+    # If key is scoped to a single bucket, prefer that
+    if allowed and allowed.get("bucketId") and allowed.get("bucketName"):
+        if bucket_name and bucket_name != allowed["bucketName"]:
+            raise RuntimeError(
+                f"Key is scoped to '{allowed['bucketName']}', but you requested '{bucket_name}'."
+            )
+        return allowed["bucketId"]
 
-    # Fallback: list buckets
+    # Otherwise, list buckets (requires listBuckets)
     url = f"{api_url}/b2api/v2/b2_list_buckets"
-    payload = {"accountId": allowed.get("accountId") if allowed else None}
-    # Provide bucketName to filter server-side
-    payload.update({"bucketName": bucket_name})
-    resp = requests.post(url, headers={"Authorization": auth_token}, json=payload, timeout=30)
-    resp.raise_for_status()
+    body = {"accountId": account_id}
+    if bucket_name:
+        body["bucketName"] = bucket_name
+
+    resp = requests.post(url, headers={"Authorization": auth_token}, json=body, timeout=30)
+    if resp.status_code != 200:
+        raise RuntimeError(f"b2_list_buckets failed: {resp.status_code} {resp.text}")
     data = resp.json()
-    buckets = data.get("buckets", [])
-    for b in buckets:
+    for b in data.get("buckets", []):
         if b.get("bucketName") == bucket_name:
             return b.get("bucketId")
-    raise RuntimeError(f"Bucket not found or not permitted: {bucket_name}")
+    raise RuntimeError(f"Bucket named '{bucket_name}' not found.")
+
 
 def b2_list_files(api_url: str, auth_token: str, bucket_id: str, prefix: str) -> List[Dict]:
     """List **all** files under prefix using pagination."""

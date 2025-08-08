@@ -11,7 +11,7 @@ services:
     volumes:
       - ${BACKUP_SOURCE}:/backup_source:ro
       - ./storage/logs:/usr/app/storage/logs
-      - ./storage/backups:/usr/app/storage/backups
+      - ${BACKUP_DESTINATION_LOCAL}:/usr/app/storage/backups
     environment:
       - BUILD_VERSION=local-build
       - NODE_ENV=${ENV:-local}

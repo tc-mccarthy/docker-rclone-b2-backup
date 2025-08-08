@@ -301,7 +301,7 @@ def main() -> None:
     # Gather configuration from environment variables
     # --------------------------------------------------------------------------
     b2_bucket = os.environ.get("B2_BUCKET")
-    remote_path = os.environ.get("REMOTE_PATH")
+    remote_path = os.environ.get("BACKUP_DESTINATION_REMOTE")
     b2_account = os.environ.get("B2_ACCOUNT_ID")
     b2_key = os.environ.get("B2_ACCOUNT_KEY")
     local_retention = int(os.environ.get("LOCAL_RETENTION", 30))

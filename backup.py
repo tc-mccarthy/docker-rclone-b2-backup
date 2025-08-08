@@ -1,26 +1,29 @@
 """
 Daily Docker Directory Backup Script
 
-This script compresses the /backup_source directory into a high-compression tarball,
-uploads it to a Backblaze B2 bucket using rclone **with progress output**, and retains only the
-most recent backups in both local and remote storage. Remote pruning uses the Backblaze B2 API
-for reliability (no rclone flags required). The script is intended to run in a containerized
-environment and takes configuration from environment variables.
+This script provides a robust, container-friendly backup solution for directories using Backblaze B2 cloud storage.
+It compresses the /backup_source directory into a high-compression .tar.xz archive, uploads it to a B2 bucket using rclone (with progress output),
+and prunes old backups both locally and remotely (using the B2 API for reliability).
 
-Note: This script does not include a built-in scheduler. It is intended to be
-run on an external schedule using cron, systemd timers, Kubernetes CronJobs,
-or other task runners.
+Features:
+    - High-compression backups with progress bar (XZ format)
+    - Uploads to Backblaze B2 via rclone (with visible progress)
+    - Prunes old backups locally and remotely (remote via B2 API, not rclone flags)
+    - Designed for containerized environments (Docker/Kubernetes)
+    - All configuration via environment variables
+    - Logs to both file and stdout for easy troubleshooting
 
-### Example: Daily Cron Job (runs at 2:30 AM)
+Note:
+    This script does not include a built-in scheduler. Run it via cron, systemd timers, Kubernetes CronJobs, or similar.
 
-```cron
-30 2 * * * ./run-backup.sh >> /var/log/docker-backup.log 2>&1
-```
+Example:
+    Daily Cron Job (runs at 2:30 AM):
+        30 2 * * * ./run-backup.sh >> /var/log/docker-backup.log 2>&1
 
-You can also use `systemd` timers, GitHub Actions, or `kubectl create cronjob` if deploying in cloud-native environments.
-
-Author: TC McCarthy (with assistance from ChatGPT)
-License: MIT or similar permissive license
+Author:
+    TC McCarthy (with assistance from ChatGPT)
+License:
+    MIT or similar permissive license
 """
 
 import os
@@ -42,19 +45,22 @@ from tqdm import tqdm
 # Configuration & Logging
 # --------------------------------------------------------------------------------------
 
+# Get the backup job name from environment (used for naming and log file)
 JOB_NAME = os.environ.get("JOB_NAME")
 if not JOB_NAME:
     print("Error: Missing required environment variable JOB_NAME.")
     sys.exit(1)
 
-# Fixed paths inside the container
-SOURCE_DIR = "/backup_source"  # mount your host path here
-LOG_DIR = "/usr/app/storage/logs"
-BACKUP_DIR = "/usr/app/storage/backups"
+# Fixed paths inside the container (can be overridden by bind mounts)
+SOURCE_DIR = "/backup_source"  # Directory to back up (should be mounted in Docker)
+LOG_DIR = "/usr/app/storage/logs"  # Where logs are written
+BACKUP_DIR = "/usr/app/storage/backups"  # Where local backup archives are stored
 
-# Ensure dirs exist; log to file + stdout
+# Ensure log and backup directories exist
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
+
+# Set up logging to both file and stdout for visibility in Docker logs
 LOGFILE = os.path.join(LOG_DIR, f"{JOB_NAME}.log")
 logging.basicConfig(
     level=logging.INFO,
@@ -281,6 +287,19 @@ def validate_b2_or_fail(bucket_name: str, account_id: str, account_key: str) -> 
 # --------------------------------------------------------------------------------------
 
 def main() -> None:
+    """
+    Main backup routine: orchestrates the full backup workflow.
+
+    This function gathers configuration from environment variables, validates credentials,
+    creates a compressed backup, uploads it to Backblaze B2, prunes old backups remotely
+    (using the B2 API), and prunes old local backups. All major steps are logged.
+
+    Raises:
+        SystemExit: If required environment variables are missing or any step fails.
+    """
+    # --------------------------------------------------------------------------
+    # Gather configuration from environment variables
+    # --------------------------------------------------------------------------
     b2_bucket = os.environ.get("B2_BUCKET")
     remote_path = os.environ.get("REMOTE_PATH")
     b2_account = os.environ.get("B2_ACCOUNT_ID")
@@ -288,7 +307,9 @@ def main() -> None:
     local_retention = int(os.environ.get("LOCAL_RETENTION", 30))
     remote_retention = int(os.environ.get("REMOTE_RETENTION", 30))
 
-    # Required envs (besides JOB_NAME which we validated earlier)
+    # --------------------------------------------------------------------------
+    # Validate required environment variables (fail fast)
+    # --------------------------------------------------------------------------
     missing = [name for name, val in [
         ("B2_BUCKET", b2_bucket),
         ("REMOTE_PATH", remote_path),
@@ -299,28 +320,38 @@ def main() -> None:
         logging.error(f"Missing required environment variables: {', '.join(missing)}")
         sys.exit(1)
 
-    # Compose remote like B2:bucket/prefix
+    # --------------------------------------------------------------------------
+    # Compose remote path and backup filename
+    # --------------------------------------------------------------------------
     b2_remote = f"B2:{b2_bucket}/{remote_path}".rstrip('/')
-
-    # Timestamped archive name (xz)
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_name = f"{JOB_NAME}-backup-{timestamp}.tar.xz"
 
     try:
-        # 1) Validate B2 creds & bucket before doing heavy work
-        # validate_b2_or_fail(b2_bucket, b2_account, b2_key)
+        # ----------------------------------------------------------------------
+        # 1) Validate B2 credentials and bucket before doing heavy work
+        # ----------------------------------------------------------------------
+        validate_b2_or_fail(b2_bucket, b2_account, b2_key)
 
-        # # 2) Create local backup
-        # archive_path = create_backup(SOURCE_DIR, backup_name)
+        # ----------------------------------------------------------------------
+        # 2) Create local backup (high-compression tar.xz with progress bar)
+        # ----------------------------------------------------------------------
+        archive_path = create_backup(SOURCE_DIR, backup_name)
 
-        # # 3) Upload to B2 (rclone shows progress)
-        # upload_to_b2(archive_path, b2_remote)
+        # ----------------------------------------------------------------------
+        # 3) Upload to B2 (rclone with progress output)
+        # ----------------------------------------------------------------------
+        upload_to_b2(archive_path, b2_remote)
 
-        # 4) Remote prune (API)
+        # ----------------------------------------------------------------------
+        # 4) Prune old remote backups using B2 API (keep only newest N)
+        # ----------------------------------------------------------------------
         prune_old_backups_remote_b2(b2_bucket, remote_path, remote_retention, b2_account, b2_key)
 
-        # # 5) Local prune
-        # prune_old_backups_local(local_retention)
+        # ----------------------------------------------------------------------
+        # 5) Prune old local backups (keep only newest N)
+        # ----------------------------------------------------------------------
+        prune_old_backups_local(local_retention)
 
         logging.info(f"Backup {backup_name} completed successfully.")
     except Exception as e:

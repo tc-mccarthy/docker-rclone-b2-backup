@@ -165,26 +165,41 @@ def b2_authorize(account_id: str, account_key: str) -> Dict:
     resp.raise_for_status()
     return resp.json()
 
-def b2_resolve_bucket_id(api_url: str, auth_token: str, bucket_name: str, allowed: Dict) -> str:
-    """Resolve bucket ID for bucket_name. Use allowed scope if present, else list buckets."""
-    if allowed:
-        # If key is restricted to a bucket, it may already be provided
-        if allowed.get("bucketName") == bucket_name and allowed.get("bucketId"):
-            return allowed["bucketId"]
+def b2_resolve_bucket_id(api_url: str, auth_token: str, bucket_name: str, auth: Dict) -> str:
+    """
+    Resolve bucket ID for bucket_name.
 
-    # Fallback: list buckets
+    - If the application key is restricted to a bucket, use the bucketId from `auth["allowed"]`
+      (and error if it doesn't match the requested bucket).
+    - Otherwise call b2_list_buckets with a *valid* accountId from `auth["accountId"]`.
+    """
+    allowed = (auth or {}).get("allowed", {}) or {}
+
+    # If the key is restricted and already has a bucketId, prefer it
+    if allowed.get("bucketId"):
+        allowed_bucket_name = allowed.get("bucketName")
+        if allowed_bucket_name and allowed_bucket_name != bucket_name:
+            raise RuntimeError(
+                f"Application key is restricted to bucket '{allowed_bucket_name}', "
+                f"but target bucket is '{bucket_name}'."
+            )
+        return allowed["bucketId"]
+
+    # Fallback: list buckets for this account and filter by name
     url = f"{api_url}/b2api/v2/b2_list_buckets"
-    payload = {"accountId": auth["accountId"]}
-    # Provide bucketName to filter server-side
-    payload.update({"bucketName": bucket_name})
+    payload = {
+        "accountId": auth["accountId"],    # ← key fix: never use allowed.accountId; use the real one
+        "bucketName": bucket_name
+    }
     resp = requests.post(url, headers={"Authorization": auth_token}, json=payload, timeout=30)
     resp.raise_for_status()
     data = resp.json()
-    buckets = data.get("buckets", [])
-    for b in buckets:
+    for b in data.get("buckets", []):
         if b.get("bucketName") == bucket_name:
             return b.get("bucketId")
+
     raise RuntimeError(f"Bucket not found or not permitted: {bucket_name}")
+
 
 def b2_list_files(api_url: str, auth_token: str, bucket_id: str, prefix: str) -> List[Dict]:
     """List **all** files under prefix using pagination."""
@@ -225,13 +240,14 @@ def b2_delete_file(api_url: str, auth_token: str, file_name: str, file_id: str) 
 def prune_old_backups_remote_b2(bucket_name: str, prefix: str, keep: int, account_id: str, account_key: str) -> None:
     """Keep only the newest `keep` remote backups under prefix using B2 API."""
     logging.info(f"Pruning remote B2 backups in {bucket_name}/{prefix}, keeping last {keep}.")
+    
     auth = b2_authorize(account_id, account_key)
     api_url = auth["apiUrl"]
     token = auth["authorizationToken"]
-    allowed = auth.get("allowed", {})
-
+    
     # Resolve bucket ID
-    bucket_id = b2_resolve_bucket_id(api_url, token, bucket_name, allowed)
+    bucket_id = b2_resolve_bucket_id(api_url, token, bucket_name, auth)  # ← pass `auth`
+
 
     # List and sort by uploadTimestamp (newest first)
     files = b2_list_files(api_url, token, bucket_id, prefix if prefix.endswith('/') else f"{prefix}/")
@@ -251,14 +267,14 @@ def prune_old_backups_remote_b2(bucket_name: str, prefix: str, keep: int, accoun
 # --------------------------------------------------------------------------------------
 
 def validate_b2_or_fail(bucket_name: str, account_id: str, account_key: str) -> None:
-    """Fast-fail check: can we auth and see the target bucket?"""
     try:
         auth = b2_authorize(account_id, account_key)
-        _ = b2_resolve_bucket_id(auth["apiUrl"], auth["authorizationToken"], bucket_name, auth.get("allowed", {}))
+        _ = b2_resolve_bucket_id(auth["apiUrl"], auth["authorizationToken"], bucket_name, auth)  # ← pass `auth`
         logging.info("Backblaze B2 credentials validated.")
     except Exception as e:
         logging.error(f"B2 credential validation failed: {e}")
         raise
+
 
 # --------------------------------------------------------------------------------------
 # Main

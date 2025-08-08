@@ -174,7 +174,7 @@ def b2_resolve_bucket_id(api_url: str, auth_token: str, bucket_name: str, allowe
 
     # Fallback: list buckets
     url = f"{api_url}/b2api/v2/b2_list_buckets"
-    payload = {"accountId": allowed.get("accountId") if allowed else None}
+    payload = {"accountId": auth["accountId"]}
     # Provide bucketName to filter server-side
     payload.update({"bucketName": bucket_name})
     resp = requests.post(url, headers={"Authorization": auth_token}, json=payload, timeout=30)

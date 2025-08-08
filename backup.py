@@ -165,30 +165,26 @@ def b2_authorize(account_id: str, account_key: str) -> Dict:
     resp.raise_for_status()
     return resp.json()
 
-def b2_resolve_bucket_id(api_url: str, auth_token: str, bucket_name: str, allowed: dict, account_id: str) -> str:
-    # If key is scoped to a single bucket, prefer that
-    if allowed and allowed.get("bucketId") and allowed.get("bucketName"):
-        if bucket_name and bucket_name != allowed["bucketName"]:
-            raise RuntimeError(
-                f"Key is scoped to '{allowed['bucketName']}', but you requested '{bucket_name}'."
-            )
-        return allowed["bucketId"]
+def b2_resolve_bucket_id(api_url: str, auth_token: str, bucket_name: str, allowed: Dict) -> str:
+    """Resolve bucket ID for bucket_name. Use allowed scope if present, else list buckets."""
+    if allowed:
+        # If key is restricted to a bucket, it may already be provided
+        if allowed.get("bucketName") == bucket_name and allowed.get("bucketId"):
+            return allowed["bucketId"]
 
-    # Otherwise, list buckets (requires listBuckets)
+    # Fallback: list buckets
     url = f"{api_url}/b2api/v2/b2_list_buckets"
-    body = {"accountId": account_id}
-    if bucket_name:
-        body["bucketName"] = bucket_name
-
-    resp = requests.post(url, headers={"Authorization": auth_token}, json=body, timeout=30)
-    if resp.status_code != 200:
-        raise RuntimeError(f"b2_list_buckets failed: {resp.status_code} {resp.text}")
+    payload = {"accountId": allowed.get("accountId") if allowed else None}
+    # Provide bucketName to filter server-side
+    payload.update({"bucketName": bucket_name})
+    resp = requests.post(url, headers={"Authorization": auth_token}, json=payload, timeout=30)
+    resp.raise_for_status()
     data = resp.json()
-    for b in data.get("buckets", []):
+    buckets = data.get("buckets", [])
+    for b in buckets:
         if b.get("bucketName") == bucket_name:
             return b.get("bucketId")
-    raise RuntimeError(f"Bucket named '{bucket_name}' not found.")
-
+    raise RuntimeError(f"Bucket not found or not permitted: {bucket_name}")
 
 def b2_list_files(api_url: str, auth_token: str, bucket_id: str, prefix: str) -> List[Dict]:
     """List **all** files under prefix using pagination."""
@@ -296,19 +292,19 @@ def main() -> None:
 
     try:
         # 1) Validate B2 creds & bucket before doing heavy work
-        # validate_b2_or_fail(b2_bucket, b2_account, b2_key)
+        validate_b2_or_fail(b2_bucket, b2_account, b2_key)
 
         # 2) Create local backup
-        # archive_path = create_backup(SOURCE_DIR, backup_name)
+        archive_path = create_backup(SOURCE_DIR, backup_name)
 
         # 3) Upload to B2 (rclone shows progress)
-        # upload_to_b2(archive_path, b2_remote)
+        upload_to_b2(archive_path, b2_remote)
 
         # 4) Remote prune (API)
         prune_old_backups_remote_b2(b2_bucket, remote_path, remote_retention, b2_account, b2_key)
 
         # 5) Local prune
-        # prune_old_backups_local(local_retention)
+        prune_old_backups_local(local_retention)
 
         logging.info(f"Backup {backup_name} completed successfully.")
     except Exception as e:
